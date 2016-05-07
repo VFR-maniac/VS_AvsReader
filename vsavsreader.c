@@ -36,7 +36,6 @@
 #define VSAVSREADER_VERSION "0.1.0"
 
 
-#define AVSC_DECLARE_FUNC(name) name##_func name
 typedef struct avsr_handle {
     VSVideoInfo vs_vi[2];
     int avs_version;
@@ -48,63 +47,18 @@ typedef struct avsr_handle {
                                  const VSAPI *, VSCore *);
     AVS_ScriptEnvironment *env;
     const AVS_VideoInfo *avs_vi;
-    HMODULE library;
-    struct {
-        AVSC_DECLARE_FUNC(avs_clip_get_error);
-        AVSC_DECLARE_FUNC(avs_create_script_environment);
-        AVSC_DECLARE_FUNC(avs_delete_script_environment);
-        AVSC_DECLARE_FUNC(avs_get_error);
-        AVSC_DECLARE_FUNC(avs_get_frame);
-        AVSC_DECLARE_FUNC(avs_get_version);
-        AVSC_DECLARE_FUNC(avs_get_video_info);
-        AVSC_DECLARE_FUNC(avs_function_exists);
-        AVSC_DECLARE_FUNC(avs_invoke);
-        AVSC_DECLARE_FUNC(avs_bit_blt);
-        AVSC_DECLARE_FUNC(avs_release_clip);
-        AVSC_DECLARE_FUNC(avs_release_value);
-        AVSC_DECLARE_FUNC(avs_release_video_frame);
-        AVSC_DECLARE_FUNC(avs_take_clip);
-    } func;
+    AVS_Library *lib;
 } avsr_hnd_t;
-#undef AVSC_DECLARE_FUNC
 
-
-#define LOAD_AVS_FUNC(name, continue_on_fail)\
-{\
-    ah->func.name = (name##_func)GetProcAddress(ah->library, #name);\
-    if (!continue_on_fail && !ah->func.name)\
-        goto fail;\
-}
 
 static int __stdcall load_avisynth_dll(avsr_hnd_t *ah)
 {
-    ah->library = LoadLibrary("avisynth");
-    if(!ah->library) {
+    ah->lib = avs_load_library();
+    if(!ah->lib) {
         return -1;
     }
-
-    LOAD_AVS_FUNC(avs_clip_get_error, 0);
-    LOAD_AVS_FUNC(avs_create_script_environment, 0);
-    LOAD_AVS_FUNC(avs_delete_script_environment, 1);
-    LOAD_AVS_FUNC(avs_get_error, 1);
-    LOAD_AVS_FUNC(avs_get_frame, 0);
-    LOAD_AVS_FUNC(avs_get_version, 0);
-    LOAD_AVS_FUNC(avs_get_video_info, 0);
-    LOAD_AVS_FUNC(avs_function_exists, 0);
-    LOAD_AVS_FUNC(avs_invoke, 0);
-    LOAD_AVS_FUNC(avs_bit_blt, 0);
-    LOAD_AVS_FUNC(avs_release_clip, 0);
-    LOAD_AVS_FUNC(avs_release_value, 0);
-    LOAD_AVS_FUNC(avs_release_video_frame, 0);
-    LOAD_AVS_FUNC(avs_take_clip, 0);
-
     return 0;
-
-fail:
-    FreeLibrary(ah->library);
-    return -1;
 }
-#undef LOAD_AVS_FUNC
 
 
 static char *convert_utf8_to_ansi(const char *utf8)
@@ -132,18 +86,18 @@ static char *convert_utf8_to_ansi(const char *utf8)
 
 static int __stdcall get_avisynth_version(avsr_hnd_t *ah)
 {
-    if (!ah->func.avs_function_exists(ah->env, "VersionNumber")) {
+    if (!ah->lib->avs_function_exists(ah->env, "VersionNumber")) {
         return 0;
     }
 
-    AVS_Value ver = ah->func.avs_invoke(ah->env, "VersionNumber",
+    AVS_Value ver = ah->lib->avs_invoke(ah->env, "VersionNumber",
                                         avs_new_value_array(NULL, 0), NULL);
     if (avs_is_error(ver) || !avs_is_float(ver)) {
         return 0;
     }
 
     int version = (int)(avs_as_float(ver) * 100 + 0.5);
-    ah->func.avs_release_value(ver);
+    ah->lib->avs_release_value(ver);
 
     return version;
 }
@@ -152,11 +106,11 @@ static int __stdcall get_avisynth_version(avsr_hnd_t *ah)
 static AVS_Value __stdcall
 invoke_avs_filter(avsr_hnd_t *ah, AVS_Value before, const char *filter)
 {
-    ah->func.avs_release_clip(ah->clip);
-    AVS_Value after = ah->func.avs_invoke(ah->env, filter, before, NULL);
-    ah->func.avs_release_value(before);
-    ah->clip = ah->func.avs_take_clip(after, ah->env);
-    ah->avs_vi = ah->func.avs_get_video_info(ah->clip);
+    ah->lib->avs_release_clip(ah->clip);
+    AVS_Value after = ah->lib->avs_invoke(ah->env, filter, before, NULL);
+    ah->lib->avs_release_value(before);
+    ah->clip = ah->lib->avs_take_clip(after, ah->env);
+    ah->avs_vi = ah->lib->avs_get_video_info(ah->clip);
     return after;
 }
 
@@ -168,9 +122,9 @@ static void __stdcall take_y8_clips_from_packed_rgb(avsr_hnd_t *ah, AVS_Value re
     AVS_Value array = avs_new_value_array(args, 2);
 
     for (int i = 0, num = ah->three_or_four; i < num; i++) {
-        AVS_Value tmp = ah->func.avs_invoke(ah->env, filter[i], array, NULL);
-        ah->rgbaclip[i] = ah->func.avs_take_clip(tmp, ah->env);
-        ah->func.avs_release_value(tmp);
+        AVS_Value tmp = ah->lib->avs_invoke(ah->env, filter[i], array, NULL);
+        ah->rgbaclip[i] = ah->lib->avs_take_clip(tmp, ah->env);
+        ah->lib->avs_release_value(tmp);
     }
 }
 
@@ -195,8 +149,8 @@ initialize_avisynth(avsr_hnd_t *ah, const char *input, const char *mode,
 {
     RET_IF_ERROR(load_avisynth_dll(ah), "failed to load avisynth.dll");
 
-    ah->env = ah->func.avs_create_script_environment(AVS_INTERFACE_26);
-    RET_IF_ERROR(ah->func.avs_get_error && ah->func.avs_get_error(ah->env),
+    ah->env = ah->lib->avs_create_script_environment(AVS_INTERFACE_26);
+    RET_IF_ERROR(ah->lib->avs_get_error && ah->lib->avs_get_error(ah->env),
                  "avisynth environment has some trouble");
 
     RET_IF_ERROR(get_avisynth_version(ah) < 260,
@@ -205,29 +159,29 @@ initialize_avisynth(avsr_hnd_t *ah, const char *input, const char *mode,
     char *input_ansi = convert_utf8_to_ansi(input);
     RET_IF_ERROR(!input_ansi, "failed to convert UTF-8 string to ANSI string");
 
-    AVS_Value res = ah->func.avs_invoke(ah->env, mode,
+    AVS_Value res = ah->lib->avs_invoke(ah->env, mode,
                                         avs_new_value_string(input_ansi), NULL);
     free(input_ansi);
     INVALID_IF_ERROR(avs_is_error(res) || !avs_defined(res),
                      "failed to invoke %s", input);
 
 #ifdef BLAME_THE_FLUFF
-    AVS_Value mt_test = ah->func.avs_invoke(ah->env, "GetMTMode",
+    AVS_Value mt_test = ah->lib->avs_invoke(ah->env, "GetMTMode",
                                             avs_new_value_bool(0), NULL);
     int mt_mode = avs_is_int(mt_test) ? avs_as_int(mt_test) : 0;
-    ah->func.avs_release_value(mt_test);
+    ah->lib->avs_release_value(mt_test);
     if (mt_mode > 0 && mt_mode < 5) {
-        AVS_Value temp = ah->func.avs_invoke(ah->env, "Distributor", res, NULL);
-        ah->func.avs_release_value(res);
+        AVS_Value temp = ah->lib->avs_invoke(ah->env, "Distributor", res, NULL);
+        ah->lib->avs_release_value(res);
         res = temp;
     }
 #endif
 
-    ah->clip = ah->func.avs_take_clip(res, ah->env);
-    const char *err = ah->func.avs_clip_get_error(ah->clip);
+    ah->clip = ah->lib->avs_take_clip(res, ah->env);
+    const char *err = ah->lib->avs_clip_get_error(ah->clip);
     INVALID_IF_ERROR(err, "%s", err);
 
-    ah->avs_vi = ah->func.avs_get_video_info(ah->clip);
+    ah->avs_vi = ah->lib->avs_get_video_info(ah->clip);
 
     INVALID_IF_ERROR(!avs_has_video(ah->avs_vi), "clip has no video");
 
@@ -245,16 +199,16 @@ initialize_avisynth(avsr_hnd_t *ah, const char *input, const char *mode,
         return res;
     }
 
-    INVALID_IF_ERROR(!avs_is_planar(ah->avs_vi) || avs_is_yv411(ah->avs_vi) ||
-                     (avs_is_y8(ah->avs_vi) && ah->bitdepth != 16) ||
-                     ((avs_is_yv24(ah->avs_vi) || avs_is_y8(ah->avs_vi)) && (ah->avs_vi->width & 1)) ||
-                     ((avs_is_yv16(ah->avs_vi) || avs_is_yv12(ah->avs_vi)) && (ah->avs_vi->width & 3)),
+    INVALID_IF_ERROR(!avs_is_planar(ah->avs_vi) || ah->lib->avs_is_yv411(ah->avs_vi) ||
+                     (ah->lib->avs_is_y8(ah->avs_vi) && ah->bitdepth != 16) ||
+                     ((ah->lib->avs_is_yv24(ah->avs_vi) || ah->lib->avs_is_y8(ah->avs_vi)) && (ah->avs_vi->width & 1)) ||
+                     ((ah->lib->avs_is_yv16(ah->avs_vi) || ah->lib->avs_is_yv12(ah->avs_vi)) && (ah->avs_vi->width & 3)),
                      "invalid bitdepth or resolution");
 
     return res;
 
 invalid:
-    ah->func.avs_release_value(res);
+    ah->lib->avs_release_value(res);
     return avs_void;
 }
 
@@ -333,20 +287,20 @@ set_vs_videoinfo(avsr_hnd_t *ah, VSCore *core, const VSAPI *vsapi, char *msg)
 static void __stdcall close_avisynth_dll(avsr_hnd_t *ah)
 {
     if (ah->clip) {
-        ah->func.avs_release_clip(ah->clip);
+        ah->lib->avs_release_clip(ah->clip);
         ah->clip = NULL;
     }
     for (int i = 0; i < ah->three_or_four; i++) {
         if (ah->rgbaclip[i]) {
-            ah->func.avs_release_clip(ah->rgbaclip[i]);
+            ah->lib->avs_release_clip(ah->rgbaclip[i]);
             ah->rgbaclip[i] = NULL;
         }
     }
-    if (ah->func.avs_delete_script_environment) {
-        ah->func.avs_delete_script_environment(ah->env);
+    if (ah->lib->avs_delete_script_environment) {
+        ah->lib->avs_delete_script_environment(ah->env);
     }
 
-    FreeLibrary(ah->library);
+    avs_free_library(ah->lib);
 }
 
 
@@ -355,11 +309,10 @@ static void __stdcall close_handler(avsr_hnd_t *ah)
     if (!ah) {
         return;
     }
-    if (ah->library) {
+    if (ah->lib) {
         close_avisynth_dll(ah);
     }
     free(ah);
-    ah = NULL;
 }
 
 
@@ -380,7 +333,7 @@ init_handler(const char *input, int bitdepth, int alpha, const char *mode,
         return NULL;
     }
 
-    ah->func.avs_release_value(res);
+    ah->lib->avs_release_value(res);
 
     if (set_vs_videoinfo(ah, core, vsapi, msg)) {
         close_handler(ah);
@@ -414,20 +367,20 @@ write_frame_rgb(avsr_hnd_t *ah, int n, VSFrameRef *dst, const VSAPI *vsapi,
 {
     AVS_VideoFrame *src[3];
     for (int i = 0; i < 3; i++) {
-        src[i] = ah->func.avs_get_frame(ah->rgbaclip[i], n);
-        if (ah->func.avs_clip_get_error(ah->rgbaclip[i])) {
-            ah->func.avs_release_video_frame(src[i]);
+        src[i] = ah->lib->avs_get_frame(ah->rgbaclip[i], n);
+        if (ah->lib->avs_clip_get_error(ah->rgbaclip[i])) {
+            ah->lib->avs_release_video_frame(src[i]);
             return -1;
         }
-        ah->func.avs_bit_blt(ah->env,
+        ah->lib->avs_bit_blt(ah->env,
                              vsapi->getWritePtr(dst, i),
                              vsapi->getStride(dst, i),
-                             avs_get_read_ptr(src[i]),
-                             avs_get_pitch(src[i]),
+                             ah->lib->avs_get_read_ptr_p(src[i], 0),
+                             ah->lib->avs_get_pitch_p(src[i], 0),
                              avs_get_row_size(src[i]),
                              avs_get_height(src[i]));
 
-        ah->func.avs_release_video_frame(src[i]);
+        ah->lib->avs_release_video_frame(src[i]);
     }
 
     return 0;
@@ -438,23 +391,23 @@ static int __stdcall
 write_frame_yuv(avsr_hnd_t *ah, int n, VSFrameRef *dst, const VSAPI *vsapi,
                 VSCore *core)
 {
-    AVS_VideoFrame *src = ah->func.avs_get_frame(ah->clip, n);
-    if (ah->func.avs_clip_get_error(ah->clip)) {
+    AVS_VideoFrame *src = ah->lib->avs_get_frame(ah->clip, n);
+    if (ah->lib->avs_clip_get_error(ah->clip)) {
         return -1;
     }
 
     const int plane[] = {AVS_PLANAR_Y, AVS_PLANAR_U, AVS_PLANAR_V};
     for (int i = 0, time = ah->vs_vi[0].format->numPlanes; i < time; i++) {
-        ah->func.avs_bit_blt(ah->env,
+        ah->lib->avs_bit_blt(ah->env,
                              vsapi->getWritePtr(dst, i),
                              vsapi->getStride(dst, i),
-                             avs_get_read_ptr_p(src, plane[i]),
-                             avs_get_pitch_p(src, plane[i]),
-                             avs_get_row_size_p(src, plane[i]),
-                             avs_get_height_p(src, plane[i]));
+                             ah->lib->avs_get_read_ptr_p(src, plane[i]),
+                             ah->lib->avs_get_pitch_p(src, plane[i]),
+                             ah->lib->avs_get_row_size_p(src, plane[i]),
+                             ah->lib->avs_get_height_p(src, plane[i]));
     }
 
-    ah->func.avs_release_video_frame(src);
+    ah->lib->avs_release_video_frame(src);
 
     return 0;
 }
@@ -463,9 +416,9 @@ write_frame_yuv(avsr_hnd_t *ah, int n, VSFrameRef *dst, const VSAPI *vsapi,
 static VSFrameRef * __stdcall
 get_alpha(int n, avsr_hnd_t *ah, VSCore *core, const VSAPI *vsapi)
 {
-    AVS_VideoFrame *src = ah->func.avs_get_frame(ah->rgbaclip[3], n);
-    if (ah->func.avs_clip_get_error(ah->rgbaclip[3])) {
-        ah->func.avs_release_video_frame(src);
+    AVS_VideoFrame *src = ah->lib->avs_get_frame(ah->rgbaclip[3], n);
+    if (ah->lib->avs_clip_get_error(ah->rgbaclip[3])) {
+        ah->lib->avs_release_video_frame(src);
             return NULL;
     }
 
@@ -477,15 +430,15 @@ get_alpha(int n, avsr_hnd_t *ah, VSCore *core, const VSAPI *vsapi)
     vsapi->propSetInt(props, "_DurationNum", ah->avs_vi->fps_denominator, paReplace);
     vsapi->propSetInt(props, "_DurationDen", ah->avs_vi->fps_numerator, paReplace);
 
-    ah->func.avs_bit_blt(ah->env,
+    ah->lib->avs_bit_blt(ah->env,
                          vsapi->getWritePtr(alpha, 0),
                          vsapi->getStride(alpha, 0),
-                         avs_get_read_ptr(src),
-                         avs_get_pitch(src),
+                         ah->lib->avs_get_read_ptr_p(src, 0),
+                         ah->lib->avs_get_pitch_p(src, 0),
                          avs_get_row_size(src),
                          avs_get_height(src));
 
-    ah->func.avs_release_video_frame(src);
+    ah->lib->avs_release_video_frame(src);
 
     return alpha;
 }
